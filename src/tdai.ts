@@ -60,7 +60,9 @@ export function createBridgeRecall(cfg: TdaiBridgeConfig): TdaiRecallFn {
       if (!res.ok) return [];
       const envelope = (await res.json()) as {
         code?: number;
-        data?: { items?: Array<{ id?: unknown; type?: unknown; content?: unknown; score?: unknown }> };
+        data?: {
+          items?: Array<{ id?: unknown; type?: unknown; content?: unknown; score?: unknown }>;
+        };
       };
       if (envelope.code !== 0) return [];
       const items = envelope.data?.items ?? [];
