@@ -1,5 +1,5 @@
 {
-  "name": "pi-observers",
+  "name": "pi-observers-tdai",
   "version": "0.1.3",
   "description": "File-defined observer agents for pi: they propose, a reconciler decides.",
   "type": "module",
