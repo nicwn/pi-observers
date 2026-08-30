@@ -8,7 +8,7 @@ import {
 import type { ModelLike } from "./models.ts";
 import { createOutputTools } from "./outputs.ts";
 import { renderSlices } from "./slices.ts";
-import { createBridgeRecall, createTdaiRecallTool, mockRecall, type TdaiRecallFn } from "./tdai.ts";
+import { createTdaiRecall, createTdaiRecallTool, type TdaiRecallFn } from "./tdai.ts";
 import type { ObserverDefinition, Proposal, SliceState } from "./types.ts";
 
 export interface ObserverRunner {
@@ -162,19 +162,19 @@ export async function createObserverRunner(opts: CreateRunnerOptions): Promise<O
   // tdai_recall must not gain a second data source, and the hermetic session stays
   // byte-identical to upstream for every other observer.
   //
-  // Recall selection: an explicit test seam wins; a host conversation id selects
-  // the TDAI memory-bridge (scoped to the host session's initialized team/agent);
-  // otherwise the mock (one-shot / non-interactive sessions where the proxy has
-  // no initialized session to derive identity from).
+  // Recall selection: an explicit test seam wins; otherwise the composite —
+  // memory via the bridge when a host conversation id exists, code-graph via the
+  // Knowledge Service when TDAI_TEAM_ID is set. A kind with no config stays
+  // silent ([]), never mock.
   const recall =
     opts.tdaiRecall ??
-    (opts.conversationId
-      ? createBridgeRecall({
-          baseUrl: process.env.TDAI_PROXY_URL ?? "http://127.0.0.1:8096",
-          serviceId: process.env.TDAI_SPACE_ID ?? "default",
-          conversationId: opts.conversationId,
-        })
-      : mockRecall);
+    createTdaiRecall({
+      conversationId: opts.conversationId,
+      teamId: process.env.TDAI_TEAM_ID,
+      bridgeBaseUrl: process.env.TDAI_PROXY_URL,
+      ksBaseUrl: process.env.TDAI_KNOWLEDGE_URL,
+      bridgeServiceId: process.env.TDAI_SPACE_ID,
+    });
   const tdaiTools = def.tools.includes("tdai_recall") ? [createTdaiRecallTool({ recall })] : [];
 
   const factory: SessionFactory = opts.createSession ?? createAgentSession;

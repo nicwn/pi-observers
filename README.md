@@ -4,6 +4,11 @@
 > observers. `memory-recall` queries the team's TDAI memory via the `tdai_recall`
 > tool instead of `.pi/memory/` files. Upstream: `erans/pi-observers`.
 
+Environment: `TDAI_PROXY_URL` (memory-bridge, default `http://127.0.0.1:8096`),
+`TDAI_SPACE_ID` (service id, default `default`), `TDAI_TEAM_ID` (enables
+code-graph recall via the Knowledge Service), `TDAI_KNOWLEDGE_URL` (Knowledge
+Service, default `http://127.0.0.1:8424`). A kind with no config stays silent.
+
 File-defined observer agents for [pi](https://pi.dev). Observers watch one axis of
 quality each, propose at most a short advisory, and a reconciler decides what reaches
 the main agent. They are read-only and never answer on the agent's behalf.
@@ -35,7 +40,8 @@ and load the extension straight from the checkout:
 
 | Observer | Watches | Default |
 |---|---|---|
-| `memory-recall` | a relevant note in `.pi/memory/` | on |
+| `memory-recall` | a relevant TDAI team memory atom (via `tdai_recall`) | on |
+| `code-graph-recall` | a relevant symbol in the team's TDAI code graph (via `tdai_recall` `kind=code_graph`) | on |
 | `skill-recall` | a skill the task should load first | on |
 | `goal-tracker` | whether a declared goal is actually met (may veto) | on |
 | `verification` | whether claimed work matches the tool record | off |

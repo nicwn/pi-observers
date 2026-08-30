@@ -78,6 +78,140 @@ export function createBridgeRecall(cfg: TdaiBridgeConfig): TdaiRecallFn {
   };
 }
 
+export interface TdaiCodeGraphConfig {
+  baseUrl: string;
+  serviceId: string;
+  teamId: string;
+  fetchImpl?: typeof fetch;
+}
+
+const KS_TIMEOUT_MS = 8000;
+
+export interface CodeGraphEntry {
+  name: string;
+  kind: string;
+  location: string;
+}
+
+/**
+ * Parse the Knowledge Service search text: entries are
+ * `**name** (kind)\npath/to/file.ts:line\n\`signature\``.
+ * The `**Search Results (N found)**` header has its count INSIDE the bold text
+ * with no trailing ` (kind)`, so the entry pattern cannot match it.
+ */
+export function parseCodeGraphResults(text: string): CodeGraphEntry[] {
+  const entries: CodeGraphEntry[] = [];
+  const re = /\*\*(.+?)\*\* \((\w+)\)\n(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const { 1: name, 2: kind, 3: location } = m;
+    if (name === undefined || kind === undefined || location === undefined) continue;
+    entries.push({ name, kind, location });
+  }
+  return entries;
+}
+
+interface KsGraph {
+  code_graph_id: string;
+  status?: string;
+}
+
+/**
+ * Real recall for kind=code_graph: the TDAI Knowledge Service. The team's ready
+ * graphs are listed once and cached per recall instance (the runner creates one
+ * per session); each is searched with {code_graph_id, query, limit}. The KS search
+ * endpoint needs no team_id — only the list does, which is why cfg requires it.
+ * Any failure → [] so the observer stays silent.
+ */
+export function createCodeGraphRecall(cfg: TdaiCodeGraphConfig): TdaiRecallFn {
+  const doFetch = cfg.fetchImpl ?? fetch;
+  let graphsCache: KsGraph[] | undefined;
+  const listGraphs = async (): Promise<KsGraph[]> => {
+    if (graphsCache) return graphsCache;
+    try {
+      const res = await doFetch(`${cfg.baseUrl}/v3/code-graph/list`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-tdai-service-id": cfg.serviceId },
+        body: JSON.stringify({ team_id: cfg.teamId }),
+        signal: AbortSignal.timeout(KS_TIMEOUT_MS),
+      });
+      if (!res.ok) return [];
+      const envelope = (await res.json()) as { code?: number; data?: { items?: KsGraph[] } };
+      if (envelope.code !== 0) return [];
+      graphsCache = envelope.data?.items ?? [];
+      return graphsCache;
+    } catch {
+      return [];
+    }
+  };
+  return async (q) => {
+    const graphs = await listGraphs();
+    const results: TdaiRecallResult[] = [];
+    for (const g of graphs) {
+      if (results.length >= q.limit) break;
+      if (g.status !== undefined && g.status !== "ready") continue;
+      try {
+        const res = await doFetch(`${cfg.baseUrl}/v3/code-graph/search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-tdai-service-id": cfg.serviceId },
+          body: JSON.stringify({ code_graph_id: g.code_graph_id, query: q.query, limit: q.limit }),
+          signal: AbortSignal.timeout(KS_TIMEOUT_MS),
+        });
+        if (!res.ok) continue;
+        const envelope = (await res.json()) as { code?: number; data?: { text?: string } };
+        if (envelope.code !== 0) continue;
+        for (const e of parseCodeGraphResults(String(envelope.data?.text ?? ""))) {
+          if (results.length >= q.limit) break;
+          results.push({
+            id: `${g.code_graph_id}:${e.location}`,
+            score: 1 - results.length * 0.01,
+            snippet: `${e.name} (${e.kind}) ${e.location}`,
+            source: "code-graph",
+          });
+        }
+      } catch {
+        continue;
+      }
+    }
+    return results;
+  };
+}
+
+export interface TdaiRecallEnv {
+  conversationId?: string;
+  teamId?: string;
+  bridgeBaseUrl?: string;
+  bridgeServiceId?: string;
+  ksBaseUrl?: string;
+  fetchImpl?: typeof fetch;
+}
+
+/**
+ * Production recall, dispatched by kind: memory via the bridge (needs the host
+ * conversation id), code_graph via the Knowledge Service (needs a team id).
+ * A kind whose config is missing returns [] — silent, never mock. `mockRecall`
+ * stays a test/tool-level default only.
+ */
+export function createTdaiRecall(env: TdaiRecallEnv): TdaiRecallFn {
+  const memoryFn: TdaiRecallFn = env.conversationId
+    ? createBridgeRecall({
+        baseUrl: env.bridgeBaseUrl ?? "http://127.0.0.1:8096",
+        serviceId: env.bridgeServiceId ?? "default",
+        conversationId: env.conversationId,
+        fetchImpl: env.fetchImpl,
+      })
+    : async () => [];
+  const cgFn: TdaiRecallFn = env.teamId
+    ? createCodeGraphRecall({
+        baseUrl: env.ksBaseUrl ?? "http://127.0.0.1:8424",
+        serviceId: env.bridgeServiceId ?? "default",
+        teamId: env.teamId,
+        fetchImpl: env.fetchImpl,
+      })
+    : async () => [];
+  return (q) => (q.kind === "memory" ? memoryFn(q) : cgFn(q));
+}
+
 export interface TdaiRecallDeps {
   recall: TdaiRecallFn;
 }
