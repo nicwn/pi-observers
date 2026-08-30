@@ -1,11 +1,16 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ModelLike } from "../src/models.ts";
 import { createObserverRunner } from "../src/runner.ts";
-import { isAllowedTool, type ObserverDefinition } from "../src/types.ts";
 import { createTdaiRecallTool, mockRecall, type TdaiRecallFn } from "../src/tdai.ts";
+import { isAllowedTool, type ObserverDefinition } from "../src/types.ts";
+
+// biome-ignore lint/suspicious/noExplicitAny: test harness for the tool execute signature
+const call = (tool: any, params: unknown) =>
+  // biome-ignore lint/suspicious/noExplicitAny: test harness for the tool execute signature
+  tool.execute("id", params, undefined, undefined, {} as any);
 
 describe("createTdaiRecallTool", () => {
   it("names the tool tdai_recall", () => {
@@ -18,7 +23,7 @@ describe("createTdaiRecallTool", () => {
       { id: "m_1", score: 0.9, snippet: "pi-observers fork in progress", source: "atom" },
     ]);
     const tool = createTdaiRecallTool({ recall });
-    const out = await tool.execute("call-1", { query: "pi observers" });
+    const out = await call(tool, { query: "pi observers" });
     const body = JSON.parse(out.content[0].text);
     expect(body).toEqual([
       { id: "m_1", score: 0.9, snippet: "pi-observers fork in progress", source: "atom" },
@@ -29,7 +34,7 @@ describe("createTdaiRecallTool", () => {
   it("passes kind and limit through", async () => {
     const recall: TdaiRecallFn = vi.fn(async () => []);
     const tool = createTdaiRecallTool({ recall });
-    await tool.execute("call-2", { query: "runner", kind: "code_graph", limit: 3 });
+    await call(tool, { query: "runner", kind: "code_graph", limit: 3 });
     expect(recall).toHaveBeenCalledWith({ query: "runner", kind: "code_graph", limit: 3 });
   });
 
@@ -81,7 +86,13 @@ describe("tdai_recall runner injection", () => {
     const factory = vi.fn(
       async (opts: { tools?: string[]; customTools?: Array<{ name: string }> }) => {
         captured = { tools: opts.tools, customTools: opts.customTools };
-        return { session: { prompt: vi.fn(async () => {}), dispose: vi.fn() } };
+        return {
+          session: {
+            prompt: vi.fn(async () => {}),
+            abort: vi.fn(async () => {}),
+            dispose: vi.fn(),
+          },
+        };
       },
     );
     await createObserverRunner({
@@ -99,7 +110,9 @@ describe("tdai_recall runner injection", () => {
     let names: string[] = [];
     const factory = vi.fn(async (opts: { customTools?: Array<{ name: string }> }) => {
       names = opts.customTools?.map((t) => t.name) ?? [];
-      return { session: { prompt: vi.fn(async () => {}), dispose: vi.fn() } };
+      return {
+        session: { prompt: vi.fn(async () => {}), abort: vi.fn(async () => {}), dispose: vi.fn() },
+      };
     });
     await createObserverRunner({
       def: tdaiDef(["read"]),
