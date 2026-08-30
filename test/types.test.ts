@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { ALLOWED_TOOLS, DEFAULTS, isAllowedTool } from "../src/types.ts";
 
 describe("types", () => {
-  it("allows exactly the four read-only tools", () => {
-    expect([...ALLOWED_TOOLS]).toEqual(["read", "grep", "find", "ls"]);
+  it("allows exactly the four read-only tools plus the fork's tdai_recall", () => {
+    expect([...ALLOWED_TOOLS]).toEqual(["read", "grep", "find", "ls", "tdai_recall"]);
   });
 
   it("rejects mutating tools", () => {

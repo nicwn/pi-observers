@@ -1,5 +1,9 @@
 # pi-observers
 
+> **Fork:** `nicwn/pi-observers-tdai` — Eran's pi-observers with TDAI-backed
+> observers. `memory-recall` queries the team's TDAI memory via the `tdai_recall`
+> tool instead of `.pi/memory/` files. Upstream: `erans/pi-observers`.
+
 File-defined observer agents for [pi](https://pi.dev). Observers watch one axis of
 quality each, propose at most a short advisory, and a reconciler decides what reaches
 the main agent. They are read-only and never answer on the agent's behalf.

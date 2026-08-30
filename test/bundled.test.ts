@@ -46,7 +46,7 @@ describe("bundled observers", () => {
   it("none request a mutating tool", () => {
     for (const o of load().observers) {
       for (const tool of o.tools) {
-        expect(["read", "grep", "find", "ls"]).toContain(tool);
+        expect(["read", "grep", "find", "ls", "tdai_recall"]).toContain(tool);
       }
     }
   });

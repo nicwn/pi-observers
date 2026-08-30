@@ -22,7 +22,7 @@ export const DELIVERY_POINTS = ["next_prompt", "next_turn", "settle"] as const;
 export type DeliveryPoint = (typeof DELIVERY_POINTS)[number];
 
 /** Read-only tools an observer may request. Enforced at load time. */
-export const ALLOWED_TOOLS = ["read", "grep", "find", "ls"] as const;
+export const ALLOWED_TOOLS = ["read", "grep", "find", "ls", "tdai_recall"] as const;
 export type AllowedTool = (typeof ALLOWED_TOOLS)[number];
 
 export function isAllowedTool(name: string): name is AllowedTool {

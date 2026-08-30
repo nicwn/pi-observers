@@ -8,6 +8,7 @@ import {
 import type { ModelLike } from "./models.ts";
 import { createOutputTools } from "./outputs.ts";
 import { renderSlices } from "./slices.ts";
+import { createTdaiRecallTool } from "./tdai.ts";
 import type { ObserverDefinition, Proposal, SliceState } from "./types.ts";
 
 export interface ObserverRunner {
@@ -153,6 +154,10 @@ export async function createObserverRunner(opts: CreateRunnerOptions): Promise<O
   // instead, at the top of each run. The session itself persists, so its context
   // accumulates across wakes rather than re-reading the same files every turn.
   const { tools, collector } = createOutputTools(def);
+  // Injected only when the definition asks for it: an observer that does not list
+  // tdai_recall must not gain a second data source, and the hermetic session stays
+  // byte-identical to upstream for every other observer.
+  const tdaiTools = def.tools.includes("tdai_recall") ? [createTdaiRecallTool()] : [];
 
   const factory: SessionFactory = opts.createSession ?? createAgentSession;
 
@@ -170,9 +175,10 @@ export async function createObserverRunner(opts: CreateRunnerOptions): Promise<O
     // output tools' names must therefore be on the list, or `propose`/`veto`
     // silently vanish from the very session whose system prompt invites them:
     // the observer reads, concludes, has nothing to call, and every run counts
-    // as a success that proposed nothing.
-    tools: [...def.tools, ...tools.map((t) => t.name)],
-    customTools: tools,
+    // as a success that proposed nothing. `tdai_recall` joins that list the same
+    // way when the definition requested it.
+    tools: [...def.tools, ...tools.map((t) => t.name), ...tdaiTools.map((t) => t.name)],
+    customTools: [...tools, ...tdaiTools],
   });
 
   let disposed = false;
