@@ -8,7 +8,7 @@ import {
 import type { ModelLike } from "./models.ts";
 import { createOutputTools } from "./outputs.ts";
 import { renderSlices } from "./slices.ts";
-import { createTdaiRecallTool } from "./tdai.ts";
+import { createBridgeRecall, createTdaiRecallTool, mockRecall, type TdaiRecallFn } from "./tdai.ts";
 import type { ObserverDefinition, Proposal, SliceState } from "./types.ts";
 
 export interface ObserverRunner {
@@ -39,6 +39,10 @@ export interface CreateRunnerOptions {
   agentDir: string;
   /** Injectable for tests. Defaults to the real SDK call. */
   createSession?: SessionFactory;
+  /** Host session conversation id (pi-{sessionId}); enables bridge-backed recall. */
+  conversationId?: string;
+  /** Test seam: overrides the tdai_recall recall fn entirely. */
+  tdaiRecall?: TdaiRecallFn;
 }
 
 export function buildObserverSystemPrompt(def: ObserverDefinition): string {
@@ -157,7 +161,21 @@ export async function createObserverRunner(opts: CreateRunnerOptions): Promise<O
   // Injected only when the definition asks for it: an observer that does not list
   // tdai_recall must not gain a second data source, and the hermetic session stays
   // byte-identical to upstream for every other observer.
-  const tdaiTools = def.tools.includes("tdai_recall") ? [createTdaiRecallTool()] : [];
+  //
+  // Recall selection: an explicit test seam wins; a host conversation id selects
+  // the TDAI memory-bridge (scoped to the host session's initialized team/agent);
+  // otherwise the mock (one-shot / non-interactive sessions where the proxy has
+  // no initialized session to derive identity from).
+  const recall =
+    opts.tdaiRecall ??
+    (opts.conversationId
+      ? createBridgeRecall({
+          baseUrl: process.env.TDAI_PROXY_URL ?? "http://127.0.0.1:8096",
+          serviceId: process.env.TDAI_SPACE_ID ?? "default",
+          conversationId: opts.conversationId,
+        })
+      : mockRecall);
+  const tdaiTools = def.tools.includes("tdai_recall") ? [createTdaiRecallTool({ recall })] : [];
 
   const factory: SessionFactory = opts.createSession ?? createAgentSession;
 
