@@ -22,6 +22,7 @@ describe("bundled observers", () => {
     const { observers, errors } = load();
     expect(errors).toEqual([]);
     expect(observers.map((o) => o.name).sort()).toEqual([
+      "code-graph-recall",
       "goal-tracker",
       "memory-recall",
       "skill-recall",
@@ -32,6 +33,7 @@ describe("bundled observers", () => {
   it("ships enabled states matching the design defaults", () => {
     const byName = Object.fromEntries(load().observers.map((o) => [o.name, o]));
     expect(byName["memory-recall"]?.enabled).toBe(true);
+    expect(byName["code-graph-recall"]?.enabled).toBe(true);
     expect(byName["skill-recall"]?.enabled).toBe(true);
     expect(byName["goal-tracker"]?.enabled).toBe(true);
     expect(byName.verification?.enabled).toBe(false);
@@ -54,6 +56,12 @@ describe("bundled observers", () => {
   it("uses the triggers and delivery modes from the spec", () => {
     const byName = Object.fromEntries(load().observers.map((o) => [o.name, o]));
     expect(byName["memory-recall"]).toMatchObject({ on: "turn_end", deliver: "next_prompt" });
+    // code-graph-recall mirrors skill-recall: before_agent_start is the only trigger
+    // that sees the request about to run, and its advice steers into that run.
+    expect(byName["code-graph-recall"]).toMatchObject({
+      on: "before_agent_start",
+      deliver: "next_prompt",
+    });
     // skill-recall stays on before_agent_start: it is the only trigger that sees the
     // request about to run. Under arrival-driven delivery its advice reaches that same
     // request as a steer on any run longer than one round-trip.

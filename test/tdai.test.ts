@@ -6,8 +6,11 @@ import type { ModelLike } from "../src/models.ts";
 import { createObserverRunner } from "../src/runner.ts";
 import {
   createBridgeRecall,
+  createCodeGraphRecall,
+  createTdaiRecall,
   createTdaiRecallTool,
   mockRecall,
+  parseCodeGraphResults,
   type TdaiRecallFn,
 } from "../src/tdai.ts";
 import { isAllowedTool, type ObserverDefinition } from "../src/types.ts";
@@ -242,5 +245,179 @@ describe("createBridgeRecall", () => {
     const first = results[0];
     if (!first) throw new Error("no result");
     expect(first.source).toBe("code-graph");
+  });
+});
+
+describe("parseCodeGraphResults", () => {
+  it("parses name/kind/location entries and skips the header", () => {
+    const text = [
+      "**Search Results (2 found)**",
+      "",
+      "**search** (method)",
+      "MemoryCore/src/core/skill/skill-core.ts:503",
+      "`(input: SearchInput): Promise<SkillSearchResult[]>`",
+      "",
+      "**search** (function)",
+      "MemoryPanel/web/src/lib/api/skills.ts:213",
+      "`(teamId: string)`",
+    ].join("\n");
+    expect(parseCodeGraphResults(text)).toEqual([
+      { name: "search", kind: "method", location: "MemoryCore/src/core/skill/skill-core.ts:503" },
+      { name: "search", kind: "function", location: "MemoryPanel/web/src/lib/api/skills.ts:213" },
+    ]);
+  });
+});
+
+describe("createCodeGraphRecall", () => {
+  const ksOk = (text: string) =>
+    ({ ok: true, status: 200, json: async () => ({ code: 0, data: { text } }) }) as unknown as Response;
+  const listOk = (items: unknown[]) =>
+    ({ ok: true, status: 200, json: async () => ({ code: 0, data: { items } }) }) as unknown as Response;
+
+  function recordingFetch(routes: {
+    list?: Response | Promise<Response>;
+    search?: (graphId: string) => Response | Promise<Response>;
+  }) {
+    const calls: Array<{ url: string; body: any }> = [];
+    const impl = (async (url: unknown, init?: { body?: string }) => {
+      const u = String(url);
+      calls.push({ url: u, body: init?.body ? JSON.parse(init.body) : undefined });
+      if (u.endsWith("/v3/code-graph/list")) return routes.list ?? listOk([]);
+      if (u.endsWith("/v3/code-graph/search")) return routes.search?.("unknown") ?? ksOk("");
+      throw new Error("unexpected url " + u);
+    }) as unknown as typeof fetch;
+    return { impl, calls };
+  }
+
+  it("lists once (cached), searches each ready graph, maps entries, respects limit", async () => {
+    let searchCount = 0;
+    const { impl, calls } = recordingFetch({
+      list: listOk([
+        { code_graph_id: "cg-a", status: "ready" },
+        { code_graph_id: "cg-b", status: "ready" },
+        { code_graph_id: "cg-c", status: "processing" },
+      ]),
+      search: (graphId) => {
+        searchCount++;
+        if (graphId === "unknown") {
+          // recordingFetch loses graphId; recover from the last call body
+        }
+        return ksOk(`**Search Results (2 found)**\n\n**find** (function)\nsrc/a.ts:1\n\`sig\`\n\n**get** (method)\nsrc/b.ts:2\n\`sig\``);
+      },
+    });
+    const recall = createCodeGraphRecall({ baseUrl: "http://ks:1", serviceId: "default", teamId: "team-x", fetchImpl: impl });
+    const q = { query: "find", kind: "code_graph" as const, limit: 2 };
+    const results = await recall(q);
+    expect(results).toEqual([
+      { id: "cg-a:src/a.ts:1", score: 1, snippet: "find (function) src/a.ts:1", source: "code-graph" },
+      { id: "cg-a:src/b.ts:2", score: 0.99, snippet: "get (method) src/b.ts:2", source: "code-graph" },
+    ]);
+    const listCalls = calls.filter((c) => c.url.endsWith("/v3/code-graph/list"));
+    const searchCalls = calls.filter((c) => c.url.endsWith("/v3/code-graph/search"));
+    expect(listCalls).toHaveLength(1);
+    expect(listCalls[0]?.body).toEqual({ team_id: "team-x" });
+    expect(searchCalls).toHaveLength(1); // limit reached inside cg-a's results
+    expect(searchCalls[0]?.body).toMatchObject({ code_graph_id: "cg-a", query: "find", limit: 2 });
+    // second search reuses the cached list and searches again (fresh query)
+    await recall(q);
+    expect(calls.filter((c) => c.url.endsWith("/v3/code-graph/list"))).toHaveLength(1);
+    expect(searchCount).toBe(2);
+  });
+
+  it("returns [] on list failure, search failure, and network error", async () => {
+    const q = { query: "x", kind: "code_graph" as const, limit: 5 };
+    const bad = (async () => ({ ok: false, status: 500, json: async () => ({}) })) as unknown as typeof fetch;
+    expect(await createCodeGraphRecall({ baseUrl: "http://ks:1", serviceId: "d", teamId: "t", fetchImpl: bad })(q)).toEqual([]);
+    const throws = (async () => {
+      throw new Error("down");
+    }) as unknown as typeof fetch;
+    expect(await createCodeGraphRecall({ baseUrl: "http://ks:1", serviceId: "d", teamId: "t", fetchImpl: throws })(q)).toEqual([]);
+    const listOkSearchBad = (async (url: unknown) =>
+      String(url).endsWith("/list")
+        ? listOk([{ code_graph_id: "cg-a", status: "ready" }])
+        : ({ ok: false, status: 500, json: async () => ({}) })) as unknown as typeof fetch;
+    expect(
+      await createCodeGraphRecall({ baseUrl: "http://ks:1", serviceId: "d", teamId: "t", fetchImpl: listOkSearchBad })(q),
+    ).toEqual([]);
+  });
+});
+
+describe("createTdaiRecall composite", () => {
+  const mkFetch = (routes: { list?: unknown; search?: unknown; bridge?: unknown }) => {
+    const seen: Array<{ url: string; body: any }> = [];
+    const impl = (async (url: unknown, init?: { body?: string }) => {
+      const u = String(url);
+      seen.push({ url: u, body: init?.body ? JSON.parse(init.body) : undefined });
+      if (u.includes("/memory-bridge/")) return routes.bridge as Response;
+      if (u.endsWith("/v3/code-graph/list")) return routes.list as Response;
+      return routes.search as Response;
+    }) as unknown as typeof fetch;
+    return { impl, seen };
+  };
+
+  it("routes memory to the bridge and code_graph to the KS", async () => {
+    const { impl, seen } = mkFetch({
+      bridge: { ok: true, status: 200, json: async () => ({ code: 0, data: { items: [{ id: "m_1", type: "atom", content: "c", score: 1 }] } }) },
+      list: { ok: true, status: 200, json: async () => ({ code: 0, data: { items: [{ code_graph_id: "cg-a", status: "ready" }] } }) },
+      search: { ok: true, status: 200, json: async () => ({ code: 0, data: { text: "**f** (function)\ns.ts:1\n\`s\`" } }) },
+    });
+    const recall = createTdaiRecall({ conversationId: "pi-s", teamId: "team-x", fetchImpl: impl });
+    const mem = await recall({ query: "q", kind: "memory", limit: 1 });
+    const cg = await recall({ query: "q", kind: "code_graph", limit: 1 });
+    expect(mem[0]?.id).toBe("m_1");
+    expect(cg[0]?.id).toBe("cg-a:s.ts:1");
+    expect(seen.some((c) => c.url.includes("/memory-bridge/v3/atomic/search"))).toBe(true);
+    expect(seen.some((c) => c.url.endsWith("/v3/code-graph/list"))).toBe(true);
+  });
+
+  it("missing conversationId → memory [] ; missing teamId → code_graph []", async () => {
+    const r1 = createTdaiRecall({ teamId: "t" });
+    expect(await r1({ query: "q", kind: "memory", limit: 1 })).toEqual([]);
+    const r2 = createTdaiRecall({ conversationId: "pi-s" });
+    expect(await r2({ query: "q", kind: "code_graph", limit: 1 })).toEqual([]);
+  });
+});
+
+describe("code-graph review fixes", () => {
+  it("parses locations containing spaces and multi-word kinds", () => {
+    const text = [
+      "**Search Results (1 found)**",
+      "",
+      "**loadBridge** (member function)",
+      "src/my plugins/bridge.ts:42",
+      "`sig`",
+    ].join("\n");
+    expect(parseCodeGraphResults(text)).toEqual([
+      { name: "loadBridge", kind: "member function", location: "src/my plugins/bridge.ts:42" },
+    ]);
+  });
+
+  it("a failed per-graph search yields partial results from the graphs that answered", async () => {
+    const impl = (async (url: unknown, init?: { body?: string }) => {
+      if (String(url).endsWith("/v3/code-graph/list")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            code: 0,
+            data: { items: [{ code_graph_id: "cg-a", status: "ready" }, { code_graph_id: "cg-b", status: "ready" }] },
+          }),
+        } as unknown as Response;
+      }
+      const graphId = init?.body ? JSON.parse(init.body).code_graph_id : "";
+      if (graphId === "cg-a") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ code: 0, data: { text: "**f** (function)\ns.ts:1\n`sig`" } }),
+        } as unknown as Response;
+      }
+      return { ok: false, status: 500, json: async () => ({}) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const recall = createCodeGraphRecall({ baseUrl: "http://ks:1", serviceId: "d", teamId: "t", fetchImpl: impl });
+    const results = await recall({ query: "f", kind: "code_graph", limit: 5 });
+    expect(results).toEqual([
+      { id: "cg-a:s.ts:1", score: 1, snippet: "f (function) s.ts:1", source: "code-graph" },
+    ]);
   });
 });
