@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ModelLike } from "../src/models.ts";
 import { createObserverRunner } from "../src/runner.ts";
-import { createBridgeRecall, createTdaiRecallTool, mockRecall, type TdaiRecallFn } from "../src/tdai.ts";
+import {
+  createBridgeRecall,
+  createTdaiRecallTool,
+  mockRecall,
+  type TdaiRecallFn,
+} from "../src/tdai.ts";
 import { isAllowedTool, type ObserverDefinition } from "../src/types.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: test harness for the tool execute signature
@@ -123,19 +128,52 @@ describe("tdai_recall runner injection", () => {
     });
     expect(names).not.toContain("tdai_recall");
   });
+
+  it("passes a bridge recall through to the tool when conversationId is set", async () => {
+    const repo2 = mkdtempSync(join(tmpdir(), "pi-observers-tdai2-"));
+    let toolsByName = new Map<string, unknown>();
+    const factory = vi.fn(async (opts: { customTools?: Array<{ name: string }> }) => {
+      toolsByName = new Map((opts.customTools ?? []).map((t) => [t.name, t]));
+      return {
+        session: { prompt: vi.fn(async () => {}), abort: vi.fn(async () => {}), dispose: vi.fn() },
+      };
+    });
+    const spyRecall = vi.fn(async () => [{ id: "m_x", score: 1, snippet: "s", source: "atom" }]);
+    const runner = await createObserverRunner({
+      def: tdaiDef(["tdai_recall"]),
+      model,
+      cwd: repo2,
+      agentDir: repo2,
+      createSession: factory,
+      conversationId: "pi-test",
+      tdaiRecall: spyRecall,
+    });
+    expect(runner.name).toBe("memory-recall");
+    // Execute the injected tool: the seam recall must be the one behind it.
+    const tdaiTool = toolsByName.get("tdai_recall");
+    if (!tdaiTool) throw new Error("tdai_recall not injected");
+    const out = await call(tdaiTool, { query: "proxy port" });
+    expect(spyRecall).toHaveBeenCalledWith({ query: "proxy port", kind: "memory", limit: 5 });
+    expect(JSON.parse(out.content[0].text)).toEqual([
+      { id: "m_x", score: 1, snippet: "s", source: "atom" },
+    ]);
+    rmSync(repo2, { recursive: true, force: true });
+  });
 });
 
 describe("createBridgeRecall", () => {
   const ok = (items: unknown[]) =>
-    ({ ok: true, status: 200, json: async () => ({ code: 0, data: { items } }) }) as unknown as Response;
+    ({
+      ok: true,
+      status: 200,
+      json: async () => ({ code: 0, data: { items } }),
+    }) as unknown as Response;
 
   it("POSTs the query with bridge identity headers and maps items", async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = (async (url: unknown, init: unknown) => {
       calls.push({ url: String(url), init: init as RequestInit });
-      return ok([
-        { id: "m_1", type: "episodic", content: "proxy port moved to 8096", score: 0.8 },
-      ]);
+      return ok([{ id: "m_1", type: "episodic", content: "proxy port moved to 8096", score: 0.8 }]);
     }) as unknown as typeof fetch;
     const recall = createBridgeRecall({
       baseUrl: "http://x:1",
@@ -147,11 +185,11 @@ describe("createBridgeRecall", () => {
     expect(results).toEqual([
       { id: "m_1", score: 0.8, snippet: "proxy port moved to 8096", source: "episodic" },
     ]);
-    expect(calls[0].url).toBe("http://x:1/memory-bridge/v3/atomic/search");
-    const headers = calls[0].init.headers as Record<string, string>;
-    expect(headers["x-tdai-service-id"]).toBe("default");
-    expect(headers["x-conversation-id"]).toBe("pi-s1");
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ query: "proxy port", limit: 3 });
+    expect(calls[0]?.url).toBe("http://x:1/memory-bridge/v3/atomic/search");
+    const headers = calls[0]?.init.headers as Record<string, string> | undefined;
+    expect(headers?.["x-tdai-service-id"]).toBe("default");
+    expect(headers?.["x-conversation-id"]).toBe("pi-s1");
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({ query: "proxy port", limit: 3 });
   });
 
   it("truncates snippets to 200 code points", async () => {
@@ -165,13 +203,18 @@ describe("createBridgeRecall", () => {
       fetchImpl,
     });
     const results = await recall({ query: "q", kind: "memory", limit: 1 });
-    expect(Array.from(results[0].snippet).length).toBeLessThanOrEqual(200);
+    const first = results[0];
+    if (!first) throw new Error("no result");
+    expect(Array.from(first.snippet).length).toBeLessThanOrEqual(200);
   });
 
   it("returns [] on code != 0, non-200, and fetch rejection", async () => {
     const mk = (envelope: unknown, okStatus = true) =>
-      (async () =>
-        ({ ok: okStatus, status: okStatus ? 200 : 500, json: async () => envelope })) as unknown as typeof fetch;
+      (async () => ({
+        ok: okStatus,
+        status: okStatus ? 200 : 500,
+        json: async () => envelope,
+      })) as unknown as typeof fetch;
     const base = { baseUrl: "http://x:1", serviceId: "d", conversationId: "c" };
     const q = { query: "q", kind: "memory" as const, limit: 1 };
     expect(await createBridgeRecall({ ...base, fetchImpl: mk({ code: 40101 }) })(q)).toEqual([]);
@@ -196,6 +239,8 @@ describe("createBridgeRecall", () => {
     });
     const results = await recall({ query: "q", kind: "code_graph", limit: 1 });
     expect(fetchImpl).not.toHaveBeenCalled();
-    expect(results[0].source).toBe("code-graph");
+    const first = results[0];
+    if (!first) throw new Error("no result");
+    expect(first.source).toBe("code-graph");
   });
 });

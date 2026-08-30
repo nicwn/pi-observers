@@ -1076,6 +1076,7 @@ export default function (pi: ExtensionAPI, deps: ObserverDeps = DEFAULT_DEPS) {
           model: resolution.model,
           cwd: ctx.cwd,
           agentDir: getAgentDir(),
+          conversationId: hostConversationId(ctx),
         });
         loaded.push({
           def,
@@ -1277,6 +1278,23 @@ export default function (pi: ExtensionAPI, deps: ObserverDeps = DEFAULT_DEPS) {
       }
     },
   });
+}
+
+/**
+ * The conversation id the TDAI memory proxy binds this pi session to, if it has one.
+ *
+ * Same formula as @nicwn/tencentdb-agent-memory-proxy's before_provider_headers
+ * (pi-{sessionId}); the memory-bridge resolves it to the session's initialized
+ * team/agent/task. Guarded: a session manager that cannot name itself just
+ * leaves tdai_recall on the mock path rather than breaking observer loading.
+ */
+function hostConversationId(ctx: ExtensionContext): string | undefined {
+  try {
+    const sid = ctx.sessionManager?.getSessionId?.();
+    return typeof sid === "string" && sid !== "" ? `pi-${sid}` : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
