@@ -377,3 +377,47 @@ describe("createTdaiRecall composite", () => {
     expect(await r2({ query: "q", kind: "code_graph", limit: 1 })).toEqual([]);
   });
 });
+
+describe("code-graph review fixes", () => {
+  it("parses locations containing spaces and multi-word kinds", () => {
+    const text = [
+      "**Search Results (1 found)**",
+      "",
+      "**loadBridge** (member function)",
+      "src/my plugins/bridge.ts:42",
+      "`sig`",
+    ].join("\n");
+    expect(parseCodeGraphResults(text)).toEqual([
+      { name: "loadBridge", kind: "member function", location: "src/my plugins/bridge.ts:42" },
+    ]);
+  });
+
+  it("a failed per-graph search yields partial results from the graphs that answered", async () => {
+    const impl = (async (url: unknown, init?: { body?: string }) => {
+      if (String(url).endsWith("/v3/code-graph/list")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            code: 0,
+            data: { items: [{ code_graph_id: "cg-a", status: "ready" }, { code_graph_id: "cg-b", status: "ready" }] },
+          }),
+        } as unknown as Response;
+      }
+      const graphId = init?.body ? JSON.parse(init.body).code_graph_id : "";
+      if (graphId === "cg-a") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ code: 0, data: { text: "**f** (function)\ns.ts:1\n`sig`" } }),
+        } as unknown as Response;
+      }
+      return { ok: false, status: 500, json: async () => ({}) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const recall = createCodeGraphRecall({ baseUrl: "http://ks:1", serviceId: "d", teamId: "t", fetchImpl: impl });
+    const results = await recall({ query: "f", kind: "code_graph", limit: 5 });
+    expect(results).toEqual([
+      { id: "cg-a:s.ts:1", score: 1, snippet: "f (function) s.ts:1", source: "code-graph" },
+    ]);
+  });
+});

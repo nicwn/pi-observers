@@ -97,16 +97,17 @@ export interface CodeGraphEntry {
  * Parse the Knowledge Service search text: entries are
  * `**name** (kind)\npath/to/file.ts:line\n\`signature\``.
  * The `**Search Results (N found)**` header has its count INSIDE the bold text
- * with no trailing ` (kind)`, so the entry pattern cannot match it.
+ * with no `** (` after it, so the entry pattern cannot match it. The location is
+ * captured to end-of-line (paths may contain spaces) and trimmed.
  */
 export function parseCodeGraphResults(text: string): CodeGraphEntry[] {
   const entries: CodeGraphEntry[] = [];
-  const re = /\*\*(.+?)\*\* \((\w+)\)\n(\S+)/g;
+  const re = /\*\*(.+?)\*\* \(([^)]+)\)\n([^\n]+)/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     const { 1: name, 2: kind, 3: location } = m;
     if (name === undefined || kind === undefined || location === undefined) continue;
-    entries.push({ name, kind, location });
+    entries.push({ name, kind, location: location.trim() });
   }
   return entries;
 }
@@ -121,7 +122,12 @@ interface KsGraph {
  * graphs are listed once and cached per recall instance (the runner creates one
  * per session); each is searched with {code_graph_id, query, limit}. The KS search
  * endpoint needs no team_id — only the list does, which is why cfg requires it.
- * Any failure → [] so the observer stays silent.
+ *
+ * Failure semantics: a failed LIST or network-level failure yields [] (nothing is
+ * known). A failed per-graph SEARCH yields PARTIAL results from the graphs that
+ * answered — deliberate: this feeds an advisory observer whose safe failure mode
+ * is silence, and a hit from a working graph is still a useful hit. A miss caused
+ * by a down graph simply means no proposal, never a wrong one.
  */
 export function createCodeGraphRecall(cfg: TdaiCodeGraphConfig): TdaiRecallFn {
   const doFetch = cfg.fetchImpl ?? fetch;
