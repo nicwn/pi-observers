@@ -1,4 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import type { ModelLike } from "../src/models.ts";
+import { createObserverRunner } from "../src/runner.ts";
+import { isAllowedTool, type ObserverDefinition } from "../src/types.ts";
 import { createTdaiRecallTool, mockRecall, type TdaiRecallFn } from "../src/tdai.ts";
 
 describe("createTdaiRecallTool", () => {
@@ -31,5 +37,77 @@ describe("createTdaiRecallTool", () => {
     const results = await mockRecall({ query: "anything", kind: "memory", limit: 5 });
     expect(results.length).toBeGreaterThan(0);
     expect(results[0]).toMatchObject({ source: "atom" });
+  });
+});
+
+describe("tdai_recall runner injection", () => {
+  let repo: string;
+  beforeAll(() => {
+    repo = mkdtempSync(join(tmpdir(), "pi-observers-tdai-"));
+  });
+  afterAll(() => {
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  const model = { provider: "test", id: "m", contextWindow: 100000 } as unknown as ModelLike;
+
+  function tdaiDef(tools: string[]): ObserverDefinition {
+    return {
+      name: "memory-recall",
+      description: "d",
+      enabled: true,
+      on: "turn_end",
+      sees: ["last_user_message"],
+      tools: tools as ObserverDefinition["tools"],
+      can: ["advise"],
+      deliver: "next_prompt",
+      fallback: [],
+      thinking: "low",
+      priority: 50,
+      maxAdvisoryChars: 300,
+      timeoutMs: 20000,
+      systemPrompt: "Watch memory.",
+      sourcePath: "/o.md",
+      scope: "builtin",
+    };
+  }
+
+  it("tdai_recall is an allowed observer tool", () => {
+    expect(isAllowedTool("tdai_recall")).toBe(true);
+  });
+
+  it("injects tdai_recall into customTools and the allowlist when requested", async () => {
+    let captured: { tools?: string[]; customTools?: Array<{ name: string }> } = {};
+    const factory = vi.fn(
+      async (opts: { tools?: string[]; customTools?: Array<{ name: string }> }) => {
+        captured = { tools: opts.tools, customTools: opts.customTools };
+        return { session: { prompt: vi.fn(async () => {}), dispose: vi.fn() } };
+      },
+    );
+    await createObserverRunner({
+      def: tdaiDef(["tdai_recall"]),
+      model,
+      cwd: repo,
+      agentDir: repo,
+      createSession: factory,
+    });
+    expect(captured.customTools?.map((t) => t.name)).toContain("tdai_recall");
+    expect(captured.tools).toContain("tdai_recall");
+  });
+
+  it("does not inject tdai_recall when not requested", async () => {
+    let names: string[] = [];
+    const factory = vi.fn(async (opts: { customTools?: Array<{ name: string }> }) => {
+      names = opts.customTools?.map((t) => t.name) ?? [];
+      return { session: { prompt: vi.fn(async () => {}), dispose: vi.fn() } };
+    });
+    await createObserverRunner({
+      def: tdaiDef(["read"]),
+      model,
+      cwd: repo,
+      agentDir: repo,
+      createSession: factory,
+    });
+    expect(names).not.toContain("tdai_recall");
   });
 });
